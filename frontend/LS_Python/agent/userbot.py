@@ -29,7 +29,7 @@ from pyrogram.errors import (
     ChatAdminRequired,
     FloodWait,
 )
-from pyrogram.handlers import MessageHandler
+from pyrogram.handlers import DeletedMessagesHandler, MessageHandler
 from pyrogram.raw.functions.messages import GetMessagesViews
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
@@ -77,6 +77,20 @@ class FloodWaitError(UserbotError):
         self.seconds = int(seconds)
         self.what = what
         super().__init__(f"Rate limited by Telegram on {what}, retry in {self.seconds}s.")
+
+
+class PostDeleted(UserbotError):
+    """
+    Raised when the post a view/reaction task is working on has been DELETED
+    from the channel (confirmed, see `post_is_deleted`). The worker turns this
+    into a harmless "skipped" result: nothing is counted and the job is not
+    retried, so a deleted post can never crash the agent or keep firing calls.
+    """
+
+    def __init__(self, chat_id: int, message_id: int):
+        self.chat_id = int(chat_id)
+        self.message_id = int(message_id)
+        super().__init__(f"Post {chat_id}/{message_id} was deleted")
 
 
 class FrozenAccountError(UserbotError):
@@ -384,7 +398,7 @@ def account_in_pacing_cooldown(account_id: int) -> bool:
 SEQUENTIAL_ACTIONS = _os.environ.get("AGENT_SEQUENTIAL_ACTIONS", "1").lower() not in ("0", "false", "no")
 
 
-async def run_pool_actions(pool, action, offsets=None, pace: float = 1.0) -> list:
+async def run_pool_actions(pool, action, offsets=None, pace: float = 1.0, should_stop=None) -> list:
     """
     Run `action(account_id, client)` for every (account_id, client) in `pool`.
 
@@ -402,11 +416,28 @@ async def run_pool_actions(pool, action, offsets=None, pace: float = 1.0) -> lis
 
     Exceptions from a single account are captured and returned in place (never
     raised) so one bad account can't abort the whole batch.
+
+    `should_stop` is an optional async predicate checked BEFORE each account
+    acts. When it returns True the run stops early and the remaining accounts
+    are reported as "skipped" — this is how a task abandons a post that was
+    deleted mid-run without touching Telegram again.
     """
     pace = max(0.1, float(pace or 1.0))
     results: list = []
+
+    async def _stop() -> bool:
+        if should_stop is None:
+            return False
+        try:
+            return bool(await should_stop())
+        except Exception:  # noqa: BLE001 - a broken check never aborts the run
+            return False
+
     if SEQUENTIAL_ACTIONS:
         for acc_id, client in pool:
+            if await _stop():
+                results.append("skipped")
+                continue
             try:
                 results.append(await action(acc_id, client))
             except Exception as e:  # noqa: BLE001 - isolate per-account failures
@@ -425,6 +456,8 @@ async def run_pool_actions(pool, action, offsets=None, pace: float = 1.0) -> lis
     async def _staggered(acc_id, client, delay):
         if delay > 0:
             await asyncio.sleep(delay)
+        if await _stop():
+            return "skipped"
         return await action(acc_id, client)
 
     return await asyncio.gather(
@@ -2268,6 +2301,206 @@ def _member_pool(member_ids: Optional[list[int]] = None) -> list[tuple[int, Clie
     return [(a, e["client"]) for a, e in _POOL.items()]
 
 
+# ===========================================================================
+# Deleted-post detection (DETECT FIRST, THEN CONFIRM)
+# ===========================================================================
+# A running view/reaction task keeps acting on one specific post. If that post
+# is deleted from the channel while the task is running, every remaining call
+# would fail (MSG_ID_INVALID / MESSAGE_ID_INVALID ...). We therefore:
+#   1. DETECT   - read the message back with a warm userbot; an empty result or
+#                 a "message id invalid" style error means "looks deleted".
+#   2. CONFIRM  - re-check a second time (and with a DIFFERENT account when we
+#                 have one) after a short pause. Only when every attempt agrees
+#                 do we treat the post as deleted. A network hiccup, a flood
+#                 wait, a private-channel error or one broken account can NEVER
+#                 be counted as a deletion.
+# When deletion is confirmed the task stops quietly (nothing is counted, no
+# crash, no retry). Anything we are not sure about is treated as "still there",
+# so an existing post is never mistaken for a deleted one.
+
+# Error fragments that mean "this message id does not exist (any more)".
+_DELETED_POST_MARKERS = (
+    "MSG_ID_INVALID",
+    "MESSAGE_ID_INVALID",
+    "MESSAGE_IDS_EMPTY",
+    "MESSAGE_DELETED",
+    "MESSAGE_NOT_FOUND",
+)
+
+# Errors that say something about the CHANNEL/ACCOUNT, not about the post, so
+# they must never be read as "the post was deleted".
+_NOT_A_DELETION_MARKERS = (
+    "CHANNEL_PRIVATE",
+    "CHANNEL_INVALID",
+    "PEER_ID_INVALID",
+    "USER_BANNED_IN_CHANNEL",
+    "USER_NOT_PARTICIPANT",
+    "AUTH_KEY",
+    "FLOOD",
+    "FROZEN",
+    "TIMEOUT",
+)
+
+# How long a confirmed verdict is trusted, and the pause between the two checks.
+POST_CHECK_CONFIRM_DELAY = float(_os.environ.get("AGENT_POST_CHECK_CONFIRM_DELAY", "4"))
+POST_CHECK_INTERVAL = float(_os.environ.get("AGENT_POST_CHECK_INTERVAL", "45"))
+
+
+def looks_deleted_error(exc: Exception) -> bool:
+    """True when a Telegram error says the message id itself is gone."""
+    text = f"{getattr(exc, 'ID', '')} {getattr(exc, 'MESSAGE', '')} {exc}".upper()
+    if any(m in text for m in _NOT_A_DELETION_MARKERS):
+        return False
+    return any(m in text for m in _DELETED_POST_MARKERS)
+
+
+async def _probe_post(chat_id: int, message_id: int, client: Client) -> str:
+    """
+    One read of the post with one account. Returns:
+      "alive"   - the message is there
+      "gone"    - the message id does not exist any more
+      "unknown" - could not tell (flood, network, no access, ...)
+    """
+    try:
+        msg = await client.get_messages(chat_id, int(message_id))
+    except Exception as e:  # noqa: BLE001 - a probe must never raise
+        return "gone" if looks_deleted_error(e) else "unknown"
+    if msg is None:
+        return "gone"
+    if isinstance(msg, list):
+        msg = msg[0] if msg else None
+        if msg is None:
+            return "gone"
+    # pyrogram returns a Message with .empty = True for a deleted id.
+    if getattr(msg, "empty", False):
+        return "gone"
+    return "alive"
+
+
+async def post_is_deleted(
+    chat_id: int,
+    message_id: int,
+    attempts: int = 2,
+    confirm_delay: Optional[float] = None,
+) -> bool:
+    """
+    Confirmed deletion check. Returns True ONLY when `attempts` independent
+    reads (spaced by `confirm_delay`, using different accounts when available)
+    all say the post is gone.
+
+    Fast and conservative:
+      * the first "alive" answer returns immediately (the normal case, no delay);
+      * an "unknown" answer (flood, network, no access) also returns False — we
+        never guess, the task simply re-checks later;
+      * only an unbroken run of "gone" answers counts as a deletion.
+    """
+    pool = [entry["client"] for entry in _POOL.values()]
+    if not pool:
+        return False
+    delay = POST_CHECK_CONFIRM_DELAY if confirm_delay is None else float(confirm_delay)
+    tries = max(1, int(attempts))
+    gone_votes = 0
+    for i in range(tries):
+        verdict = await _probe_post(chat_id, message_id, pool[i % len(pool)])
+        if verdict != "gone":
+            return False  # alive, or not sure -> treat the post as still there
+        gone_votes += 1
+        if i < tries - 1:
+            await asyncio.sleep(delay)
+    confirmed = gone_votes == tries
+    if confirmed:
+        log(f"[post] chat {chat_id} msg #{message_id}: DELETED (confirmed by {gone_votes} check(s))")
+    return confirmed
+
+
+class DeletionGuard:
+    """
+    Cheap "is the post still there?" gate for a long running view/reaction task.
+    The verdict is cached for POST_CHECK_INTERVAL seconds, so a task that runs
+    for minutes re-checks only now and then instead of on every account, and it
+    only ever reports a deletion that passed the confirm step.
+    """
+
+    def __init__(self, chat_id: int, message_id: int, interval: Optional[float] = None):
+        self.chat_id = int(chat_id)
+        self.message_id = int(message_id)
+        self.interval = POST_CHECK_INTERVAL if interval is None else float(interval)
+        self._deleted = False
+        self._checked_at = 0.0
+
+    def mark_suspect(self) -> None:
+        """A call failed with a 'message id invalid' error -> re-check now."""
+        self._checked_at = 0.0
+
+    @property
+    def deleted(self) -> bool:
+        return self._deleted
+
+    async def is_deleted(self) -> bool:
+        if self._deleted:
+            return True
+        # Telegram just told us this exact post was deleted -> verify right now
+        # instead of waiting for the next scheduled check.
+        if has_delete_hint(self.chat_id, self.message_id):
+            self._checked_at = 0.0
+        now = time.monotonic()
+        if now - self._checked_at < self.interval:
+            return False
+        self._checked_at = now
+        try:
+            self._deleted = await post_is_deleted(self.chat_id, self.message_id)
+        except Exception as e:  # noqa: BLE001 - never break the task over a check
+            log(f"[post] delete-check failed for {self.chat_id}/{self.message_id}: {e}")
+            self._deleted = False
+        return self._deleted
+
+
+# Live "this post was deleted" hints coming from Telegram's delete updates. A
+# hint alone is never trusted: it only tells a running task to re-verify NOW
+# (post_is_deleted still has to confirm it), which is what keeps a post that
+# still exists from ever being treated as deleted.
+_DELETE_HINTS: dict[tuple[int, int], float] = {}
+_DELETE_HINT_TTL = 900.0
+
+
+def note_delete_hint(chat_id: int, message_id: int) -> None:
+    now = time.monotonic()
+    _DELETE_HINTS[(int(chat_id), int(message_id))] = now
+    if len(_DELETE_HINTS) > 5000:
+        for k, ts in list(_DELETE_HINTS.items()):
+            if now - ts > _DELETE_HINT_TTL:
+                _DELETE_HINTS.pop(k, None)
+
+
+def has_delete_hint(chat_id: int, message_id: int) -> bool:
+    ts = _DELETE_HINTS.get((int(chat_id), int(message_id)))
+    if ts is None:
+        return False
+    if time.monotonic() - ts > _DELETE_HINT_TTL:
+        _DELETE_HINTS.pop((int(chat_id), int(message_id)), None)
+        return False
+    return True
+
+
+async def _on_deleted_messages(client: Client, messages) -> None:
+    """
+    Live handler: Telegram told this userbot that some messages were deleted.
+    We only record a hint so any running view/reaction task on that post
+    re-checks (and confirms) immediately instead of waiting for its next poll.
+    """
+    try:
+        items = messages if isinstance(messages, (list, tuple)) else [messages]
+        for m in items:
+            chat = getattr(m, "chat", None)
+            mid = getattr(m, "id", None)
+            if chat is None or mid is None:
+                continue
+            note_delete_hint(chat.id, int(mid))
+            vlog(f"[post] delete hint: chat {chat.id} msg #{mid}")
+    except Exception as e:  # noqa: BLE001 - a hint must never break anything
+        vlog(f"[post] delete hint failed: {e}")
+
+
 async def view_post_all(chat_id: int, message_id: int, spread_seconds: float = 0.0) -> int:
     """
     Increment the view count of a post from EVERY warm userbot, but trickle the
@@ -2373,9 +2606,21 @@ async def view_post_scheduled(
     sem = _get_action_sem()
     ok_ids: list[int] = []
     bad_ids: list[int] = []
+
+    # The post may have been deleted between being queued and now. Confirmed
+    # check first: if it is really gone we never touch Telegram for it again.
+    guard = DeletionGuard(chat_id, message_id)
+    if await guard.is_deleted():
+        raise PostDeleted(chat_id, message_id)
+
     # A grouped post (album) is ONE post: increment the views of every item of
     # the media group in a single call so all its parts show the same count.
-    view_ids = await album_ids(chat_id, message_id) or [int(message_id)]
+    try:
+        view_ids = await album_ids(chat_id, message_id) or [int(message_id)]
+    except Exception as e:  # noqa: BLE001 - album lookup must never crash the job
+        if looks_deleted_error(e) and await post_is_deleted(chat_id, message_id):
+            raise PostDeleted(chat_id, message_id) from None
+        view_ids = [int(message_id)]
 
     async def _one(acc_id: int, client: Client) -> bool:
         # Gate the actual MTProto work so a big pool can't flood the event loop
@@ -2393,6 +2638,10 @@ async def view_post_scheduled(
                 not_member = _is_not_member_error(e)
                 if not_member:
                     bad_ids.append(acc_id)
+                # "message id invalid" => the post may have just been deleted;
+                # ask the guard to re-verify before the next account acts.
+                if looks_deleted_error(e):
+                    guard.mark_suspect()
                 log(
                     f"[view] chat {chat_id} msg #{message_id} acct {acc_id} -> FAIL "
                     f"({'not a member' if not_member else e.__class__.__name__}: {e})"
@@ -2403,9 +2652,18 @@ async def view_post_scheduled(
     # before the next — the per-account gap the fleet uses to avoid bursts.
     started = time.monotonic()
     log(f"[view] chat {chat_id} msg #{message_id}: starting with {len(pool)} userbot(s), speed {mode}")
-    results = await run_pool_actions(pool, _one, offsets, pace_factor(mode))
+    results = await run_pool_actions(
+        pool, _one, offsets, pace_factor(mode), should_stop=guard.is_deleted
+    )
     await _note_membership(chat_id, ok_ids, bad_ids)
     done = sum(1 for ok in results if ok is True)
+    if guard.deleted:
+        skipped = sum(1 for r in results if r == "skipped")
+        log(
+            f"[view] chat {chat_id} msg #{message_id}: post deleted mid-run — stopped, "
+            f"{done} view(s) already sent, {skipped} userbot(s) skipped"
+        )
+        return done
     log(
         f"[view] chat {chat_id} msg #{message_id}: {done}/{len(pool)} view(s) registered "
         f"in {time.monotonic() - started:.0f}s"
@@ -2516,6 +2774,12 @@ def attach_view_handlers() -> int:
         handler = MessageHandler(_on_channel_post, post_filter)
         client.add_handler(handler)
         entry["view_handler"] = handler
+        # Same clients also report deletions, so a post removed while a task is
+        # running is detected instantly (and then confirmed before we stop).
+        if not entry.get("delete_handler"):
+            del_handler = DeletedMessagesHandler(_on_deleted_messages)
+            client.add_handler(del_handler)
+            entry["delete_handler"] = del_handler
         count += 1
     return count
 
@@ -2866,6 +3130,12 @@ async def react_post_scheduled(
     sem = _get_action_sem()
     ok_ids: list[int] = []
 
+    # Deleted-post gate: confirmed check before the first reaction, then a
+    # cached re-check between accounts so a post deleted mid-run stops the task.
+    guard = DeletionGuard(chat_id, message_id)
+    if await guard.is_deleted():
+        raise PostDeleted(chat_id, message_id)
+
     async def _gated_react(acc_id: int, client: Client) -> str:
         # Gate the reaction call so a pool-wide burst can't saturate the event
         # loop and starve live-stream WebRTC keepalives (bots getting kicked).
@@ -2874,6 +3144,9 @@ async def react_post_scheduled(
             kind = await _react_once(client, chat_id, message_id, emojis, acc_id)
         if kind == "ok":
             ok_ids.append(acc_id)
+        elif kind == "blocked":
+            # Could be "post deleted" — force the guard to verify right away.
+            guard.mark_suspect()
         return kind
 
     started = time.monotonic()
@@ -2888,8 +3161,12 @@ async def react_post_scheduled(
     blocked = sum(1 for r in probe_results if r == "blocked")
 
     # Every probe was blocked and none succeeded -> reactions are impossible on
-    # this post for anyone. Stop here instead of trying the remaining userbots.
+    # this post for anyone. Before giving up, find out WHY: if the post itself
+    # was deleted we report that (so the job is skipped, not retried); otherwise
+    # reactions are simply not allowed here.
     if probe_n > 0 and success == 0 and blocked == probe_n:
+        if await post_is_deleted(chat_id, message_id):
+            raise PostDeleted(chat_id, message_id)
         log(
             f"[react] skipping post {chat_id}/{message_id}: reactions not allowed "
             f"(all {probe_n} probe userbot(s) blocked); remaining {len(rest_pool)} skipped"
@@ -2908,10 +3185,20 @@ async def react_post_scheduled(
 
     # Drip the reactions one account at a time (default): each account reacts,
     # then waits its own personal delay before the next account reacts. One bad
-    # account is captured in-place and never aborts the batch.
-    results = await run_pool_actions(rest_pool, _gated_react, offsets, pace_factor(mode))
+    # account is captured in-place and never aborts the batch. The guard stops
+    # the remaining accounts the moment a deletion is confirmed.
+    results = await run_pool_actions(
+        rest_pool, _gated_react, offsets, pace_factor(mode), should_stop=guard.is_deleted
+    )
     await _note_membership(chat_id, ok_ids, [])
     done = success + sum(1 for r in results if r == "ok")
+    if guard.deleted:
+        skipped = sum(1 for r in results if r == "skipped")
+        log(
+            f"[react] chat {chat_id} msg #{message_id}: post deleted mid-run — stopped, "
+            f"{done} reaction(s) already sent, {skipped} userbot(s) skipped"
+        )
+        return done
     log(
         f"[react] chat {chat_id} msg #{message_id}: {done}/{len(pool)} reaction(s) sent "
         f"in {time.monotonic() - started:.0f}s"

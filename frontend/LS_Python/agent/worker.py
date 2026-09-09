@@ -678,10 +678,17 @@ async def handle_view_post(job: dict) -> dict:
     # Only the userbots stored as members of this channel view it (empty = not
     # learned yet, so the agent falls back to the whole warm pool and learns).
     member_ids = await db.arun(db.get_channel_member_ids, chat_id)
-    count = await userbot.view_post_scheduled(
-        chat_id, message_id, VIEW_SPREAD_SECONDS, view_min, view_max, shard_index, SHARD_COUNT,
-        member_ids, mode,
-    )
+    try:
+        count = await userbot.view_post_scheduled(
+            chat_id, message_id, VIEW_SPREAD_SECONDS, view_min, view_max, shard_index, SHARD_COUNT,
+            member_ids, mode,
+        )
+    except userbot.PostDeleted:
+        # The post was deleted (confirmed twice) while this job was queued or
+        # running: nothing can be viewed any more. Skip quietly — no crash, no
+        # retry, and no views are counted for a post that no longer exists.
+        print(f"[i] view job skipped: post {chat_id}/{message_id} was deleted")
+        return {"stage": "skipped", "reason": "post deleted", "message_id": message_id}
     if target_id:
         db.bump_view_sent(int(target_id), count)
     return {"stage": "viewed", "views": count, "message_id": message_id}
@@ -793,10 +800,16 @@ async def handle_react_post(job: dict) -> dict:
     # would multiply the reactions by the shard count = "all userbots react").
     shard_index = int(p.get("shard_index", SHARD_INDEX) or 0)
     member_ids = await db.arun(db.get_channel_member_ids, chat_id)
-    count = await userbot.react_post_scheduled(
-        chat_id, message_id, emojis, window, react_min, react_max, shard_index, SHARD_COUNT,
-        member_ids, mode,
-    )
+    try:
+        count = await userbot.react_post_scheduled(
+            chat_id, message_id, emojis, window, react_min, react_max, shard_index, SHARD_COUNT,
+            member_ids, mode,
+        )
+    except userbot.PostDeleted:
+        # Confirmed deletion: the post is gone, so no reaction can land on it.
+        # Skip quietly instead of retrying / crashing, and count nothing.
+        print(f"[i] reaction job skipped: post {chat_id}/{message_id} was deleted")
+        return {"stage": "skipped", "reason": "post deleted", "message_id": message_id}
     if target_id:
         db.bump_reaction_sent(int(target_id), count)
     return {"stage": "reacted", "reactions": count, "message_id": message_id}
