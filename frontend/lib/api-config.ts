@@ -21,6 +21,14 @@ export function maskKey(value: string): string {
   return `${v.slice(0, 6)}****${v.slice(-4)}`
 }
 
+// Short ids (like the store user id) are hidden the same way: dots + last 4.
+export function maskId(value: string): string {
+  const v = (value || "").trim()
+  if (!v) return ""
+  if (v.length <= 4) return "••••"
+  return `••••${v.slice(-4)}`
+}
+
 // ---------------------------------------------------------------- Buy Api ----
 
 export interface TgLionCreds {

@@ -39,8 +39,7 @@ import { toast } from "sonner"
 interface TgLionSettings {
   configured: boolean
   apiKeyMasked: string
-  userId: string
-  baseUrl: string
+  userIdMasked: string
 }
 
 interface AiKey {
@@ -80,8 +79,14 @@ function BuyApiTab() {
   const configured = Boolean(data?.configured)
 
   async function save() {
-    if (!apiKey.trim() || !(userId.trim() || data?.userId)) {
+    const nextKey = apiKey.trim()
+    const nextUser = userId.trim()
+    if (!configured && (!nextKey || !nextUser)) {
       toast.error("Enter both the IMH Store API key and user ID.")
+      return
+    }
+    if (!nextKey && !nextUser) {
+      toast.error("Change the API key or the user ID first.")
       return
     }
     setSaving(true)
@@ -89,7 +94,7 @@ function BuyApiTab() {
       const res = await fetch("/api/settings/tglion", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: apiKey.trim(), userId: (userId.trim() || data?.userId) ?? "" }),
+        body: JSON.stringify({ apiKey: nextKey, userId: nextUser }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json?.error ?? "Failed to save.")
@@ -156,15 +161,16 @@ function BuyApiTab() {
                 id="tglion_user"
                 value={userId}
                 onChange={(e) => setUserId(e.target.value)}
-                placeholder={data?.userId || "e.g. 7188243734"}
+                placeholder={data?.userIdMasked || "e.g. 4931827506"}
                 inputMode="numeric"
+                type="password"
                 className="h-11 font-mono"
                 autoComplete="off"
                 data-testid="tglion-user-input"
               />
-              {data?.userId ? (
+              {data?.userIdMasked ? (
                 <p className="text-xs text-muted-foreground">
-                  Saved user ID: <span className="font-mono">{data.userId}</span>
+                  Saved user ID: <span className="font-mono">{data.userIdMasked}</span>
                 </p>
               ) : null}
             </div>
