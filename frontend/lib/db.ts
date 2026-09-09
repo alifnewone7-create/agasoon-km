@@ -360,6 +360,34 @@ CREATE TABLE IF NOT EXISTS message_sends (
 
 CREATE INDEX IF NOT EXISTS message_sends_campaign_idx ON message_sends (campaign_id);
 CREATE INDEX IF NOT EXISTS message_campaigns_created_idx ON message_campaigns (created_at DESC);
+
+-- API credentials managed from the panel (Api section) instead of .env ---------
+-- api_settings: simple key/value store. Holds the tg-lion (Buy Api) credentials
+--   'tglion_api_key' and 'tglion_user_id'. The tg-lion BASE URL stays in .env.
+CREATE TABLE IF NOT EXISTS api_settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ai_api_keys: one row per Groq API key. The app uses the first 'active' key and
+-- automatically switches to the next one when a key runs out of credit / hits a
+-- rate limit (status 'cooldown' + cooldown_until). Once the limit resets, the
+-- key becomes usable again automatically.
+CREATE TABLE IF NOT EXISTS ai_api_keys (
+  id             SERIAL PRIMARY KEY,
+  label          TEXT,
+  api_key        TEXT NOT NULL UNIQUE,
+  status         TEXT NOT NULL DEFAULT 'active',   -- active | cooldown | invalid | disabled
+  cooldown_until TIMESTAMPTZ,
+  last_error     TEXT,
+  last_used_at   TIMESTAMPTZ,
+  uses           INTEGER NOT NULL DEFAULT 0,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ai_api_keys_status_idx ON ai_api_keys (status, id);
 `
 
 // Reads every scripts/*.sql file in filename order and returns them as an

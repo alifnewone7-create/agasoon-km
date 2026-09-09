@@ -3,16 +3,17 @@
 // happens on the Python agent (see LS_Python/agent/tglion.py); the website only
 // needs balance / countries / getNumber.
 //
-// Config (project env vars):
-//   TGLION_API_KEY   (required)
-//   TGLION_USER_ID   (required)  -> sent as `YourID`
-//   TGLION_BASE_URL  (optional)  -> defaults to https://tg-lion.net
+// Config:
+//   Buy Api section (stored in Neon): tg-lion API key + user id (`YourID`)
+//   TGLION_BASE_URL  (.env, optional)  -> defaults to https://tg-lion.net
 //
 // IMPORTANT: use the APEX domain (tg-lion.net). The www. host serves the docs
 // HTML page, not the JSON API, which is why get_balance was returning HTML.
 //
 // Every call parses JSON defensively so an empty body or HTML error page raises
 // a clear error instead of the cryptic "Expecting value: line 1 column 1".
+
+import { getTgLionCreds } from "@/lib/api-config"
 
 const BASE_URL = (process.env.TGLION_BASE_URL || "https://tg-lion.net").replace(/\/+$/, "")
 
@@ -26,11 +27,10 @@ export interface TgLionCountry {
   price: string
 }
 
-function creds() {
-  const apiKey = (process.env.TGLION_API_KEY || "").trim()
-  const userId = (process.env.TGLION_USER_ID || "").trim()
+async function creds() {
+  const { apiKey, userId } = await getTgLionCreds()
   if (!apiKey || !userId) {
-    throw new TgLionError("TGLION_API_KEY and TGLION_USER_ID are not set. Add them in project settings (Vars).")
+    throw new TgLionError("IMH Store API key and user ID are not set. Add them in the Api section (Buy Api tab).")
   }
   return { apiKey, userId }
 }
@@ -38,7 +38,7 @@ function creds() {
 async function call(action: string, extra: Record<string, string | undefined> = {}): Promise<any> {
   // Lazily check credentials only when actually making a call, not on module import.
   // This prevents the error from appearing at startup if the feature isn't being used.
-  const { apiKey, userId } = creds()
+  const { apiKey, userId } = await creds()
   const url = new URL(BASE_URL)
   url.searchParams.set("action", action)
   url.searchParams.set("apiKey", apiKey)
@@ -51,24 +51,24 @@ async function call(action: string, extra: Record<string, string | undefined> = 
   try {
     res = await fetch(url.toString(), { cache: "no-store" })
   } catch (e: any) {
-    throw new TgLionError(`tg-lion request failed (${action}): ${e?.message ?? e}`)
+    throw new TgLionError(`IMH Store request failed (${action}): ${e?.message ?? e}`)
   }
-  if (!res.ok) throw new TgLionError(`tg-lion ${action} failed: HTTP ${res.status}`)
+  if (!res.ok) throw new TgLionError(`IMH Store ${action} failed: HTTP ${res.status}`)
 
   const body = (await res.text()).trim()
   if (!body) {
-    throw new TgLionError(`tg-lion returned an empty response for ${action} (rate-limited or bad key). Try again.`)
+    throw new TgLionError(`IMH Store returned an empty response for ${action} (rate-limited or bad key). Try again.`)
   }
   let data: any
   try {
     data = JSON.parse(body)
   } catch {
-    throw new TgLionError(`tg-lion did not return JSON for ${action} (blocked/maintenance?): ${body.slice(0, 200)}`)
+    throw new TgLionError(`IMH Store did not return JSON for ${action} (blocked/maintenance?): ${body.slice(0, 200)}`)
   }
   const status = String(data?.status ?? "").toLowerCase()
   if (status && status !== "ok" && status !== "success") {
     const msg = data?.error || data?.message || body.slice(0, 200)
-    throw new TgLionError(`tg-lion ${action} error: ${msg}`)
+    throw new TgLionError(`IMH Store ${action} error: ${msg}`)
   }
   return data
 }
@@ -94,6 +94,6 @@ export async function buyNumber(countryCode: string, maxPrice?: string): Promise
   if (!countryCode) throw new TgLionError("A country is required to buy a number.")
   const data = await call("getNumber", { country_code: countryCode, maxPrice })
   const number = String(data?.Number ?? "").trim()
-  if (!number) throw new TgLionError(`tg-lion did not return a number: ${JSON.stringify(data).slice(0, 200)}`)
+  if (!number) throw new TgLionError(`IMH Store did not return a number: ${JSON.stringify(data).slice(0, 200)}`)
   return data as BuyNumberResult
 }

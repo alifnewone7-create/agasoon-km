@@ -511,7 +511,7 @@ export function ReviewSection() {
     <div className="flex flex-col gap-4">
       {/* Mobile: two sections — compose a review, or look at recent campaigns.
           Desktop: everything on one page with Recent campaigns pinned on top. */}
-      <div className="inline-flex w-full rounded-lg border border-border bg-muted/40 p-1 text-sm md:hidden">
+      <div className="inline-flex w-full rounded-lg border border-border bg-muted/40 p-1 text-sm md:max-w-md">
         <button
           type="button"
           onClick={() => setMobileTab("review")}
@@ -543,7 +543,7 @@ export function ReviewSection() {
 
       {/* ---------------- Recent campaigns (top on desktop) ---------------- */}
       <section
-        className={`flex flex-col gap-3 ${mobileTab === "recent" ? "flex" : "hidden"} md:flex`}
+        className={`flex flex-col gap-3 ${mobileTab === "recent" ? "flex" : "hidden"}`}
         aria-label="Recent campaigns"
       >
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -580,7 +580,7 @@ export function ReviewSection() {
 
       {/* ---------------- Compose ---------------- */}
       <section
-        className={`flex flex-col gap-4 ${mobileTab === "review" ? "flex" : "hidden"} md:flex`}
+        className={`flex flex-col gap-4 ${mobileTab === "review" ? "flex" : "hidden"}`}
         aria-label="Compose reviews"
       >
         <div className="hidden items-center gap-2 md:flex">
@@ -726,8 +726,8 @@ export function ReviewSection() {
 
         {/* Step 3 — target + send (stays in reach while scrolling) */}
         <Card className="sticky bottom-4 border-primary/30 shadow-lg">
-          <CardContent className="flex flex-col gap-3 pt-6">
-            <div className="flex flex-col gap-2">
+          <CardContent className="flex flex-col gap-3 pt-6 sm:flex-row sm:items-end sm:gap-4">
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
               <Label htmlFor="review_target" className="flex items-center gap-2">
                 <span className="flex size-6 items-center justify-center rounded-md bg-primary/15 text-xs font-semibold text-primary">
                   3
@@ -744,23 +744,18 @@ export function ReviewSection() {
                     setTargetLink(cleaned)
                   }}
                   placeholder="@username or t.me/username"
-                  className="pl-9"
+                  className="h-11 pl-9"
                 />
               </div>
             </div>
             <Button
-              className="w-full gap-2"
+              className="h-11 w-full shrink-0 gap-2 sm:w-auto sm:px-6"
               disabled={sending || accounts.length === 0 || !isTelegramLink(targetLink)}
               onClick={handleSend}
             >
               {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-              {sending ? "Sending..." : "Send to target with userbots"}
+              {sending ? "Sending..." : "Send to target"}
             </Button>
-            <p className="text-xs text-muted-foreground">
-              {
-                "Each account messages the target one-by-one with a safe gap. Text boxes send as separate messages; multiple images in one icon send as a grouped album; a separate icon sends separately."
-              }
-            </p>
           </CardContent>
         </Card>
       </section>

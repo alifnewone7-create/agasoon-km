@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Users, Eye, Vote, Smile, UserCog, UserPlus, Trash2, MessageSquare } from "lucide-react"
+import { Users, Eye, Vote, Smile, UserCog, UserPlus, Trash2, MessageSquare, KeyRound } from "lucide-react"
 import { Tabs, TabsContent } from "@/components/ui/tabs"
 import { MobileNav } from "@/components/mobile-nav"
 import { DesktopSidebar } from "@/components/desktop-sidebar"
@@ -15,6 +15,7 @@ import { ChannelJoinSection } from "@/components/channel-join-section"
 import { ProfileSection } from "@/components/profile-section"
 import { PrpDeleteSection } from "@/components/prp-delete-section"
 import { ReviewSection } from "@/components/review-section"
+import { ApiSection } from "@/components/api-section"
 
 const NAV = [
   { value: "accounts", label: "Users", icon: Users },
@@ -25,6 +26,7 @@ const NAV = [
   { value: "profile", label: "Profile", icon: UserCog },
   { value: "prp-delete", label: "Prp Delete", icon: Trash2 },
   { value: "review", label: "Review", icon: MessageSquare },
+  { value: "api", label: "Api", icon: KeyRound },
 ] as const
 
 const STORAGE_KEY = "tu-sidebar-collapsed"
@@ -132,6 +134,9 @@ export function Dashboard() {
               </TabsContent>
               <TabsContent value="review" className="animate-rise">
                 <ReviewSection />
+              </TabsContent>
+              <TabsContent value="api" className="animate-rise">
+                <ApiSection />
               </TabsContent>
             </Tabs>
           </main>

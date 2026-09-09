@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server"
 import { isAuthenticated } from "@/lib/auth"
+import { AiKeyError, groqChat } from "@/lib/api-config"
 
-// Groq is OpenAI-compatible. Key + model come from the environment only.
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+// Groq is OpenAI-compatible. Keys come from the Api section (Neon); the model
+// name is fixed in lib/api-config.ts.
 
 // Reviews are generated in small batches so a 100-500 review run never hits the
 // model's output limit (which used to truncate the JSON and fail the whole run).
@@ -28,42 +29,29 @@ Hard rules:
 type Review = { text: string; hashtags: string[] }
 
 async function generateBatch(
-  apiKey: string,
-  model: string,
   prompt: string,
   count: number,
   batchNo: number,
   totalBatches: number,
 ): Promise<Review[]> {
-  const res = await fetch(GROQ_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      temperature: 1.05,
-      top_p: 0.95,
-      max_completion_tokens: Math.min(16000, 800 + count * 260),
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM },
-        {
-          role: "user",
-          content:
-            `Generate EXACTLY ${count} reviews.\n` +
-            `This is batch ${batchNo} of ${totalBatches} for the same channel, so make this batch's wording, ` +
-            `names, amounts, lengths and emotions clearly different from any other batch.\n\n` +
-            `STYLE BRIEF (follow strictly):\n${prompt}`,
-        },
-      ],
-    }),
+  const data = await groqChat({
+    temperature: 1.05,
+    top_p: 0.95,
+    max_completion_tokens: Math.min(16000, 800 + count * 260),
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM },
+      {
+        role: "user",
+        content:
+          `Generate EXACTLY ${count} reviews.\n` +
+          `This is batch ${batchNo} of ${totalBatches} for the same channel, so make this batch's wording, ` +
+          `names, amounts, lengths and emotions clearly different from any other batch.\n\n` +
+          `STYLE BRIEF (follow strictly):\n${prompt}`,
+      },
+    ],
   })
 
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "")
-    throw new Error(`AI request failed (${res.status}). ${detail.slice(0, 160)}`)
-  }
-
-  const data = await res.json().catch(() => null)
   const content = data?.choices?.[0]?.message?.content
   const parsed = JSON.parse(String(content ?? "{}"))
   const raw = Array.isArray(parsed) ? parsed : (parsed.reviews ?? parsed.list ?? parsed.items ?? [])
@@ -90,12 +78,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const apiKey = process.env.GROQ_API_KEY
-  const model = process.env.GROQ_MODEL
-  if (!apiKey || !model) {
-    return NextResponse.json({ error: "AI is not configured (GROQ_API_KEY / GROQ_MODEL missing)." }, { status: 500 })
-  }
-
   const body = await req.json().catch(() => ({}))
   const quantity = Math.min(500, Math.max(1, Number.parseInt(String(body?.quantity ?? "0"), 10) || 0))
   const prompt = String(body?.prompt ?? "").trim()
@@ -113,8 +95,8 @@ export async function POST(req: Request) {
     const slice = sizes.slice(i, i + PARALLEL)
     const results = await Promise.all(
       slice.map((count, k) =>
-        generateBatch(apiKey, model, prompt, count, i + k + 1, sizes.length).catch((e) => {
-          lastError = e instanceof Error ? e.message : String(e)
+        generateBatch(prompt, count, i + k + 1, sizes.length).catch((e) => {
+          lastError = e instanceof AiKeyError || e instanceof Error ? e.message : String(e)
           return [] as Review[]
         }),
       ),

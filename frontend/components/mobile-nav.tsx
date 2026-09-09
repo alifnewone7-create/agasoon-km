@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { createPortal } from "react-dom"
-import { Menu, X, Users, LogOut, Eye, Vote, Smile, UserCog, UserPlus, Trash2, MessageSquare } from "lucide-react"
+import { Menu, X, Users, LogOut, Eye, Vote, Smile, UserCog, UserPlus, Trash2, MessageSquare, KeyRound } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { logoutAction } from "@/app/actions/auth"
 import {
@@ -32,6 +32,7 @@ const TABS: Tab[] = [
   { value: "profile", label: "Profile", icon: <UserCog className="size-[18px]" /> },
   { value: "prp-delete", label: "Prp Delete", icon: <Trash2 className="size-[18px]" /> },
   { value: "review", label: "Review", icon: <MessageSquare className="size-[18px]" /> },
+  { value: "api", label: "Api", icon: <KeyRound className="size-[18px]" /> },
 ]
 
 interface MobileNavProps {

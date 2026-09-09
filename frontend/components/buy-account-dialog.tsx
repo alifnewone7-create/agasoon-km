@@ -72,7 +72,7 @@ export function BuyAccountDialog({ onBought }: { onBought: () => void }) {
       />
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Buy &amp; auto-provision with iamhear</DialogTitle>
+          <DialogTitle>Buy &amp; auto-provision with IMH Store</DialogTitle>
           <DialogDescription>
             Pick a country and how many accounts you want. The agent buys them one by one and, for each, logs in,
             collects the API, turns off the old 2FA and sets your new one — fully automatic.
@@ -95,14 +95,12 @@ export function BuyAccountDialog({ onBought }: { onBought: () => void }) {
           <div className="mb-1 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
             <div className="min-w-0 space-y-1">
-              <p className="text-sm font-medium text-destructive">tg-lion is not reachable</p>
+              <p className="text-sm font-medium text-destructive">IMH Store is not reachable</p>
               <p className="break-words text-xs text-foreground/80">{apiError}</p>
-              {/(invalid api key|missing apikey|TGLION_API_KEY)/i.test(apiError) ? (
+              {/(invalid api key|missing apikey|api key|user id)/i.test(apiError) ? (
                 <p className="text-xs text-muted-foreground">
-                  Fix <code className="rounded bg-muted px-1">TGLION_API_KEY</code> and{" "}
-                  <code className="rounded bg-muted px-1">TGLION_USER_ID</code> in the server{" "}
-                  <code className="rounded bg-muted px-1">.env</code> (get them from your tg-lion.net dashboard), then
-                  restart. Nothing needs to be entered here.
+                  Set the IMH Store <strong>Api key</strong> and <strong>User ID</strong> in the{" "}
+                  <strong>Api → Buy Api</strong> section (get them from your IMH Store dashboard).
                 </p>
               ) : null}
             </div>
