@@ -33,7 +33,6 @@ import {
   CheckCircle2,
   AlertCircle,
   Clock,
-  Link2,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -199,13 +198,6 @@ function BuyApiTab() {
                 </AlertDialogContent>
               </AlertDialog>
             ) : null}
-          </div>
-
-          <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-            <Link2 className="mt-0.5 size-3.5 shrink-0" />
-            <span>
-              The IMH Store base URL is configured on the server (.env) — only the key and user ID are managed here.
-            </span>
           </div>
         </CardContent>
       </Card>
