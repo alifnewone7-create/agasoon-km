@@ -23,7 +23,8 @@ import {
   CheckCircle2,
   XCircle,
   Clock,
-  Link2,
+  AtSign,
+  ChevronDown,
   Users,
   AlertCircle,
   Images,
@@ -384,6 +385,8 @@ export function ReviewSection() {
   const [search, setSearch] = useState("")
   // Mobile only: which of the two sections is visible (desktop shows both).
   const [mobileTab, setMobileTab] = useState<"review" | "recent">("review")
+  // Step 3 card can be collapsed with the arrow (both mobile and desktop).
+  const [targetOpen, setTargetOpen] = useState(true)
   const bulkMediaRef = useRef<HTMLInputElement>(null)
 
   // Filter accounts by the search box while KEEPING each account's real position
@@ -724,38 +727,53 @@ export function ReviewSection() {
           </div>
         )}
 
-        {/* Step 3 — target + send (stays in reach while scrolling) */}
+        {/* Step 3 — target + send (stays in reach while scrolling, collapsible) */}
         <Card className="sticky bottom-4 border-primary/30 shadow-lg">
-          <CardContent className="flex flex-col gap-3 pt-6 sm:flex-row sm:items-end sm:gap-4">
-            <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <CardContent className="flex flex-col gap-3 p-4 sm:gap-4">
+            <div className="flex items-center justify-between gap-2">
               <Label htmlFor="review_target" className="flex items-center gap-2">
                 <span className="flex size-6 items-center justify-center rounded-md bg-primary/15 text-xs font-semibold text-primary">
                   3
                 </span>
                 Target user link
               </Label>
-              <div className="relative">
-                <Link2 className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  id="review_target"
-                  value={targetLink}
-                  onChange={(e) => {
-                    const cleaned = stripSpaces(e.target.value)
-                    setTargetLink(cleaned)
-                  }}
-                  placeholder="@username or t.me/username"
-                  className="h-11 pl-9"
-                />
-              </div>
+              <button
+                type="button"
+                onClick={() => setTargetOpen((v) => !v)}
+                aria-expanded={targetOpen}
+                aria-label={targetOpen ? "Hide target" : "Show target"}
+                data-testid="review-target-toggle"
+                className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <ChevronDown className={`size-4 transition-transform ${targetOpen ? "" : "-rotate-90"}`} />
+              </button>
             </div>
-            <Button
-              className="h-11 w-full shrink-0 gap-2 sm:w-auto sm:px-6"
-              disabled={sending || accounts.length === 0 || !isTelegramLink(targetLink)}
-              onClick={handleSend}
-            >
-              {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-              {sending ? "Sending..." : "Send to target"}
-            </Button>
+
+            {targetOpen ? (
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+                <div className="relative min-w-0 flex-1">
+                  <AtSign className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="review_target"
+                    value={targetLink}
+                    onChange={(e) => {
+                      const cleaned = stripSpaces(e.target.value)
+                      setTargetLink(cleaned)
+                    }}
+                    placeholder="@username or t.me/username"
+                    className="h-11 pl-9"
+                  />
+                </div>
+                <Button
+                  className="h-11 w-full shrink-0 gap-2 sm:w-auto sm:px-6"
+                  disabled={sending || accounts.length === 0 || !isTelegramLink(targetLink)}
+                  onClick={handleSend}
+                >
+                  {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+                  {sending ? "Sending..." : "Send to target"}
+                </Button>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       </section>
